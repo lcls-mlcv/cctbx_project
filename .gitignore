@@ -1,3 +1,6 @@
+# Our custom folder
+xfel/conda_envs/cctbx/
+
 # Compiled Python files
 __pycache__/
 *.py[cod]
