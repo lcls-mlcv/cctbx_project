@@ -933,17 +933,20 @@ class DiffMapJob(Job):
   Computes a difference map with respect to a reference state. This task is expected to be run after
   a merging task in the dataset.
   Users are expected to put the following commands in the task definition textbox, with information
-  in the square brackets supplied by the user, and content in the angle brackets infered by this program:
+  in the square brackets supplied by the user, optional information in the parentheses, and content 
+  in the angle brackets infered by this program:
   ```
     (Optional self-sufficient commands.)
-    rs.scaleit -r [APO_MTZ][I_COLNAME][SIGI_COLNAME] -i <PREVIOUS_TASK_MTZ> [I_COLNAME][SIGI_COLNAME]
-    rs.diffmap -r [PDBPHASES.mtz] <[PHENIX/GEMMI]_PHI_COLNAME> (Optional flags, such as weighting -a 0.05)
+    scaleit.refmtz=[APO_MTZ] (I_COLNAME) (SIGI_COLNAME)
+    diffmap.phase_mtz=[PDBPHASES.mtz] (PHI_COLNAME)
+    # Optional diffmap related flags as shown below
+    diffmap.alpha=0.05
   ```
-  If no rs.scaleit command is provided because the data is already rescaled or re-scaling is not needed, 
-  the expected commands are:
+  If no scaleit parameter is provided because the data is already rescaled or re-scaling is not needed, 
+  additional diffmap related commands are expected to be provided:
   ```
-    (Optional self-sufficient commands.)
-    rs.diffmap -r [PDBPHASES.mtz] <[PHENIX/GEMMI]_PHI_COLNAME> -off [APO_MTZ] [I_COLNAME][SIGI_COLNAME] -on <PREVIOUS_TASK_MTZ> [I_COLNAME][SIGI_COLNAME] (Optional flags, such as weighting -a 0.05)
+    diffmap.off_mtz=[APO_MTZ] (I_COLNAME) (SIGI_COLNAME)
+    diffmap.on_mtz=<PREVIOUS_TASK_MTZ> (I_COLNAME) (SIGI_COLNAME)
   ```
   An example of a self-sufficient command to run at the beginning is, say calculating [PDBPHASES.mtz] 
   from a pdb file:
@@ -991,7 +994,65 @@ class DiffMapJob(Job):
     diffmap_mtz = "%s_v%03d_%s%03d.mtz"%(self.dataset.name, self.dataset_version.version, self.task.type, self.task.id)
     # Modify these suffixes based on your program's output files
     return path, None, None, diffmap_mtz, None
+  
+  def _get_default_colname(self, mtz_name, is_sig=False):
+    if mtz_name.split('/')[-1].startswith('asu_'): #abismal output
+      return 'F' if not is_sig else 'SIGF'
+    else: #assumes xfel.merging output
+      return 'Iobs' if not is_sig else 'SIGIobs'
 
+  def _build_scaleit_command(self, ref_mtz, ref_colname, ref_sig_colname, 
+                             input_mtz, input_colname, input_sig_colname, 
+                             output_path):
+    if ref_mtz is None:
+      return None
+    if ref_colname is None:
+      ref_colname = self._get_default_colname(ref_mtz)
+    if ref_sig_colname is None:
+      ref_sig_colname = self._get_default_colname(ref_mtz, is_sig=True)
+    if input_colname is None:
+      input_colname = self._get_default_colname(input_mtz)
+    if input_sig_colname is None:
+      input_sig_colname = self._get_default_colname(input_mtz, is_sig=True)
+
+    output_mtz = "%s_v%03d_scaleit%03d.mtz"%(self.dataset.name, self.dataset_version.version, self.task.id)
+    output_mtz = os.path.join(output_path, output_mtz)
+    return 'rs.scaleit -r %s %s %s -i %s %s %s -o %s'%(ref_mtz, ref_colname, ref_sig_colname, 
+                                                       input_mtz, input_colname, input_sig_colname, 
+                                                       output_mtz)
+  
+  def _fill_placeholder(self, line, input_folder, input_mtz):
+    line = line.strip()
+    line = line.replace('<PREVIOUS_TASK_MTZ>', os.path.join(input_folder, input_mtz))
+    line = line.replace('<PREVIOUS_TASK_FOLDER>', input_folder)
+    line = line.replace('<DATASET_NAME>', self.dataset.name)
+    line = line.replace('<DATASET_VERSION>', str(self.dataset_version.version))
+    line = line.replace('<PHENIX_PHI_COLNAME>', 'PHIF-model')
+    line = line.replace('<GEMMI_PHI_COLNAME>', 'PHIC')
+    return line
+  
+  def _build_diffmap_command(self, phase_mtz, phase_colname, 
+                             off_mtz, off_colname, off_sig_colname, 
+                             on_mtz, on_colname, on_sig_colname, 
+                             output_path, other_flags):
+    if off_colname is None:
+      off_colname = self._get_default_colname(off_mtz)
+    if off_sig_colname is None:
+      off_sig_colname = self._get_default_colname(off_mtz, is_sig=True)
+    if on_colname is None:
+      on_colname = self._get_default_colname(on_mtz)
+    if on_sig_colname is None:
+      on_sig_colname = self._get_default_colname(on_mtz, is_sig=True)
+    output_mtz = "%s_v%03d_%s%03d.mtz"%(self.dataset.name, self.dataset_version.version, self.task.type, self.task.id)
+    output_mtz = os.path.join(output_path, output_mtz)
+    diffmap_command = 'rs.diffmap -r %s %s -off %s %s %s -on %s %s %s -o %s'%(phase_mtz, phase_colname, 
+                                                                              off_mtz, off_colname, off_sig_colname, 
+                                                                              on_mtz, on_colname, on_sig_colname, 
+                                                                              output_mtz)
+    for key, value in other_flags.items():
+      diffmap_command += ' --%s %s'%(key, value)
+    return diffmap_command
+  
   def submit(self, previous_job = None):
     from xfel.command_line.cxi_mpi_submit import do_submit
 
@@ -1000,36 +1061,94 @@ class DiffMapJob(Job):
       os.makedirs(output_path)
     identifier_string = self.get_identifier_string()
     input_folder, _, _, input_mtz, _ = previous_job.get_output_files()
-    
+    if previous_job.__class__ == AbismalJob:
+      previous_job_colname = 'F'
+      previous_job_sig_colname = 'SIGF'
+    else: # default to xfel.merging first columns
+      previous_job_colname = 'Iobs'
+      previous_job_sig_colname = 'SIGIobs'
+
     # Parse your task parameters
     lines = self.task.parameters.split('\n')
-    # program_path = lines[0].strip()  # First line should be the path to your program
-    # command_args = lines[1:]
-    # command = self.task.parameters
+    commands = []
 
-    scaleit_mtz = None
-    for i in range(len(lines)):
-      if lines[i].strip().startswith('rs.scaleit'):
-        scaleit_mtz = "%s_v%03d_scaleit%03d.mtz"%(self.dataset.name, self.dataset_version.version, self.task.id)
-        scaleit_command = lines[i] + ' -o %s'%(scaleit_mtz)
-        lines[i] = scaleit_command
-      if lines[i].strip().startswith('rs.diffmap'):
-        diffmap_mtz = "%s_v%03d_%s%03d.mtz"%(self.dataset.name, self.dataset_version.version, self.task.type, self.task.id)
-        diffmap_command = lines[i] + ' -o %s'%(diffmap_mtz)
-        if scaleit_mtz is not None:
-           if '-off' not in lines[i]: diffmap_command += ' -off %s FP SIGFP '%(scaleit_mtz)
-           if '-on' not in lines[i]: diffmap_command += ' -on %s FPH1 SIGFPH1 '%(scaleit_mtz)
-        lines[i] = diffmap_command
+    scaleit_ref_mtz = None
+    scaleit_ref_colname = None
+    scaleit_ref_sig_colname = None
+    scaleit_input_mtz = os.path.join(input_folder, input_mtz)
+    scaleit_input_colname = previous_job_colname
+    scaleit_input_sig_colname = previous_job_sig_colname
+    scaleit_output_mtz = None
+
+    diffmap_phase_mtz = None
+    diffmap_phase_colname = 'PHIF-model'
+
+    diffmap_off_mtz = None
+    diffmap_off_colname = None
+    diffmap_off_sig_colname = None
+
+    diffmap_on_mtz = os.path.join(input_folder, input_mtz)
+    diffmap_on_colname = previous_job_colname
+    diffmap_on_sig_colname = previous_job_sig_colname
+
+    diffmap_otherflags = dict()
+
+    last_diffmap_idx = -1
+    for i, line in enumerate(lines):
+      line = self._fill_placeholder(line, input_folder, input_mtz)
+      if line.startswith('scaleit.ref_mtz'): scaleit_ref_mtz = line.split('=')[1].strip()
+      elif line.startswith('scaleit.ref_colname'): scaleit_ref_colname = line.split('=')[1].strip()
+      elif line.startswith('scaleit.ref_sig_colname'): scaleit_ref_sig_colname = line.split('=')[1].strip()
+      elif line.startswith('scaleit.input_mtz'): scaleit_input_mtz = line.split('=')[1].strip()
+      elif line.startswith('scaleit.input_colname'): scaleit_input_colname = line.split('=')[1].strip()
+      elif line.startswith('scaleit.input_sig_colname'): scaleit_input_sig_colname = line.split('=')[1].strip()
+      elif line.startswith('diffmap'):
+        scaleit_command = self._build_scaleit_command(scaleit_ref_mtz, scaleit_ref_colname, scaleit_ref_sig_colname, 
+                                                      scaleit_input_mtz, scaleit_input_colname, scaleit_input_sig_colname, 
+                                                      output_path)
+        if scaleit_command is not None: 
+          commands.append(scaleit_command)
+          diffmap_off_mtz, diffmap_off_colname, diffmap_off_sig_colname = scaleit_output_mtz, 'FP', 'SIGFP'
+          diffmap_on_mtz, diffmap_on_colname, diffmap_on_sig_colname = scaleit_output_mtz, 'FPH1', 'SIGFPH1'
+        last_diffmap_idx = i
+        if line.startswith('diffmap.phase_mtz'): diffmap_phase_mtz = line.split('=')[1].strip()
+        elif line.startswith('diffmap.phase_colname'): diffmap_phase_colname = line.split('=')[1].strip()
+        elif line.startswith('diffmap.off_mtz'): diffmap_off_mtz = line.split('=')[1].strip()
+        elif line.startswith('diffmap.off_colname'): diffmap_off_colname = line.split('=')[1].strip()
+        elif line.startswith('diffmap.off_sig_colname'): diffmap_off_sig_colname = line.split('=')[1].strip()
+        elif line.startswith('diffmap.on_mtz'): diffmap_on_mtz = line.split('=')[1].strip()
+        elif line.startswith('diffmap.on_colname'): diffmap_on_colname = line.split('=')[1].strip()
+        elif line.startswith('diffmap.on_sig_colname'): diffmap_on_sig_colname = line.split('=')[1].strip()
+        else:
+          key, value = line.strip().split('=')
+          key = key.split('.')[1]
+          diffmap_otherflags[key] = value
+      else:
+        commands.append(line)
     
+    diffmap_command = self._build_diffmap_command(diffmap_phase_mtz, diffmap_phase_colname, 
+                                                  diffmap_off_mtz, diffmap_off_colname, diffmap_off_sig_colname, 
+                                                  diffmap_on_mtz, diffmap_on_colname, diffmap_on_sig_colname, 
+                                                  output_path, diffmap_otherflags)
+
+    if last_diffmap_idx != -1:
+      if last_diffmap_idx == len(lines) - 1: commands.append(diffmap_command)  
+      else:
+        next_command_after_diffmap = lines[last_diffmap_idx+1].strip()
+        next_command_idx = commands.index(next_command_after_diffmap)
+        commands.insert(next_command_idx, diffmap_command)
+    command = "\n".join(commands)
+
+
     # Construct full command
     # command = "%s %s" % (program_path, ' '.join(command_args))
-    command = '\n'.join(lines)
-    command = command.replace('<PREVIOUS_TASK_MTZ>', os.path.join(input_folder, input_mtz))
-    command = command.replace('<PREVIOUS_TASK_FOLDER>', input_folder)
-    command = command.replace('<DATASET_NAME>', self.dataset.name)
-    command = command.replace('<DATASET_VERSION>', str(self.dataset_version.version))
-    command = command.replace('<PHENIX_PHI_COLNAME>', 'PHIF-model')
-    command = command.replace('<GEMMI_PHI_COLNAME>', 'PHIC')
+    # command = '\n'.join(lines)
+    # command = command.replace('<PREVIOUS_TASK_MTZ>', os.path.join(input_folder, input_mtz))
+    # command = command.replace('<PREVIOUS_TASK_FOLDER>', input_folder)
+    # command = command.replace('<DATASET_NAME>', self.dataset.name)
+    # command = command.replace('<DATASET_VERSION>', str(self.dataset_version.version))
+    # command = command.replace('<PHENIX_PHI_COLNAME>', 'PHIF-model')
+    # command = command.replace('<GEMMI_PHI_COLNAME>', 'PHIC')
     submit_path = os.path.join(output_path, identifier_string + "_submit.sh")
 
     # Set up submission parameters
@@ -1131,7 +1250,8 @@ class AbismalJob(Job):
     - .pdb, otherwise None
     """
     path = self.get_global_path()
-    return path, None, None, "asu_*_epoch_*.mtz", None
+    num_epochs = self.task.parameters.split('\n')[0].split('=')[1].strip()
+    return path, None, None, f"asu_0_epoch_{num_epochs}.mtz", None
 
   def submit(self, previous_job = None):
     from xfel.command_line.cxi_mpi_submit import do_submit
