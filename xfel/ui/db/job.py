@@ -847,7 +847,8 @@ class MergingJob(Job):
       f.write("input.reflections_suffix=%s\n"%refl_suffix)
       f.write("output.output_dir=%s\n"%output_path)
       f.write("output.prefix=%s_v%03d\n"%(self.dataset.name, self.dataset_version.version))
-    
+      f.write(self.task.parameters)
+
     command = "cctbx.xfel.merge %s"%target_phil_path
     submit_path = os.path.join(output_path, identifier_string + "_submit.sh")
 
