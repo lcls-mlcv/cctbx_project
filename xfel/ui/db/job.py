@@ -848,9 +848,7 @@ class MergingJob(Job):
       f.write("output.output_dir=%s\n"%output_path)
       f.write("output.prefix=%s_v%03d\n"%(self.dataset.name, self.dataset_version.version))
     
-    # Add the INPUTS array command as the first line
-    command = "INPUTS=(`while read -r pattern; do eval ls $pattern; done <<< \"$(cat %s)\"`)\n%s" % (input_paths, command)
-    
+    command = "cctbx.xfel.merge %s"%target_phil_path
     submit_path = os.path.join(output_path, identifier_string + "_submit.sh")
 
     params = self.app.params.mp
