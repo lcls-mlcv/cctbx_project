@@ -1034,6 +1034,8 @@ class DiffMapJob(Job):
                              off_mtz, off_colname, off_sig_colname, 
                              on_mtz, on_colname, on_sig_colname, 
                              output_path, other_flags):
+    if phase_mtz is None or off_mtz is None:
+      return None
     if off_colname is None:
       off_colname = self._get_default_colname(off_mtz)
     if off_sig_colname is None:
@@ -1059,7 +1061,12 @@ class DiffMapJob(Job):
     if not os.path.exists(output_path):
       os.makedirs(output_path)
     identifier_string = self.get_identifier_string()
-    input_folder, _, _, input_mtz, _ = previous_job.get_output_files()
+    try:
+      input_folder, _, _, input_mtz, _ = previous_job.get_output_files()
+    except:
+      print("previous_job is NoneType")
+      input_folder = ''
+      input_mtz = ''
     if previous_job.__class__ == AbismalJob:
       previous_job_colname = 'F'
       previous_job_sig_colname = 'SIGF'
@@ -1107,6 +1114,7 @@ class DiffMapJob(Job):
                                                       output_path)
         if scaleit_command is not None: 
           commands.append(scaleit_command)
+          scaleit_output_mtz = scaleit_command.split('-o')[1].strip()
           diffmap_off_mtz, diffmap_off_colname, diffmap_off_sig_colname = scaleit_output_mtz, 'FP', 'SIGFP'
           diffmap_on_mtz, diffmap_on_colname, diffmap_on_sig_colname = scaleit_output_mtz, 'FPH1', 'SIGFPH1'
         last_diffmap_idx = i
